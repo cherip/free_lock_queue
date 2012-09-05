@@ -13,7 +13,7 @@ const float CPU_MHZ = 2797; //use cat /proc/cpuinfo get the value
 const float CPU_tick_count_per_second = CPU_MHZ*1000*1000;
 
 const int CACAH_SIZE = 0xFFFFFF; 
-int num_thread_pop = 2;
+int num_thread_pop = 5;
 int num_thread_push = 5;
 int real_queue_num = 5;
 
@@ -31,7 +31,7 @@ struct real_lock_free_queue {
     }
 
     unsigned long long get_val() {
-        if (head == end) return 0xFFFFFFFFFFFFFFF;
+        if (head == end) return 1;
         if (cache[head] == 0) {
         //    printf("get %d %d\n", head, end);
         }
@@ -72,6 +72,7 @@ struct lock_free_queue   //Œ“∞— µœ÷≤ø∑÷»•µÙ¡À£¨øÚº‹π©≤Œøº£¨∆‰÷–¥Ú”°≤ø∑÷∞Ô÷˙µ˜ ‘£
         push_count++;
         if (push_count % 10000000 == 0) {
             printf("%.4f\n", (float)push_count / (count_per_thread_push * 10));
+            calc_total_push();
         }
 
         real_lock_free_queue *c_queue = &real_queue[idx];
@@ -91,31 +92,23 @@ struct lock_free_queue   //Œ“∞— µœ÷≤ø∑÷»•µÙ¡À£¨øÚº‹π©≤Œøº£¨∆‰÷–¥Ú”°≤ø∑÷∞Ô÷˙µ˜ ‘£
 	bool pop()
 	{
         for(;;) {
-            int flag = 0;
             int quit = 1;
             unsigned long long min_val = 0xFFFFFFFFFFFFFFF;
             //printf("new round...\n");
             for (int i = 0; i < real_queue_num; i++) {
                 unsigned long long tmp = real_queue[i].get_val(); 
-                if (tmp != 0 && tmp < min_val) {
-                    min_val = tmp;
-                    flag = i;
+                if (tmp != 0 && tmp != 1) {
+                    if (pop_lock_flag[i] == 0) {
+                        if (__sync_bool_compare_and_swap(&pop_lock_flag[i], 0, 1)) {
+                            bool ret = real_queue[i].pop();
+                            pop_lock_flag[i] = 0;
+                            return true;
+                        }
+                    }
                 }
-                if (tmp != 0) {
-                    //printf("queue num %d %lld\n", i, tmp);
-                    quit = 0;
-                }
+                if (tmp != 0) quit = 0;
             }
-            if (quit) return false;
-            //if (min_val == 0) return false;
-            //printf("%d %lld\n", flag, min_val);
-            if (pop_lock_flag[flag] == 0) {
-                if (__sync_bool_compare_and_swap(&pop_lock_flag[flag], 0, 1)) {
-                    bool ret = real_queue[flag].pop();
-                    pop_lock_flag[flag] = 0;
-                    return true;
-                }
-            }
+            if(quit) return false;
         }
 	};
     real_lock_free_queue* get_queue(int k) {
@@ -134,7 +127,7 @@ struct lock_free_queue   //Œ“∞— µœ÷≤ø∑÷»•µÙ¡À£¨øÚº‹π©≤Œøº£¨∆‰÷–¥Ú”°≤ø∑÷∞Ô÷˙µ˜ ‘£
             total += real_queue[i].push_count;
             total_pop += real_queue[i].pop_count;
         }
-        printf("%lld %lld\n", total, total_pop);
+        printf("%lld %lld %lld\n", total, total_pop, total - total_pop);
     }
 
 	lock_free_queue()
