@@ -14,8 +14,152 @@ const float CPU_tick_count_per_second = CPU_MHZ*1000*1000;
 
 const int CACAH_SIZE = 0xFFFFFF; 
 int num_thread_pop = 5;
-int num_thread_push = 5;
+int num_thread_push = 1;
 int real_queue_num = 5;
+
+#include <stddef.h>
+
+struct node_t;
+struct pointer_t 
+{
+    node_t *ptr;
+    unsigned int tag;
+    pointer_t() {
+        ptr = NULL;
+        tag = 0;
+    }
+    pointer_t(node_t *a_ptr, unsigned int a_tag) {
+        ptr = a_ptr; tag=a_tag;
+    }
+
+    friend
+        bool operator==(pointer_t const &l, pointer_t const &r)
+    {
+        return l.ptr == r.ptr && l.tag == r.tag;
+    }
+
+    friend 
+        bool operator!=(pointer_t const &l, pointer_t const &r)
+    {
+        return !(l == r);
+    }
+};
+
+//typedef void * data_type;
+
+#define dummy_val NULL
+
+typedef unsigned long long data_type;
+
+struct node_t { 
+    pointer_t next; // wgg 发现了64位错误的原因是 cmp16b需要16字节对齐，现在改正过来了。
+    data_type value; 
+    node_t() {
+        value = dummy_val;
+        next=  pointer_t(NULL,0);
+    }
+};
+
+
+
+#ifdef __x86_64__
+inline
+bool CAS2(pointer_t *addr,
+         pointer_t &old_value,
+         pointer_t &new_value)
+{
+    bool  ret;
+    __asm__ __volatile__(
+        "lock cmpxchg16b %1;\n"
+        "sete %0;\n"
+        :"=m"(ret),"+m" (*(volatile pointer_t *) (addr))
+        :"a" (old_value.ptr), "d" (old_value.tag), "b" (new_value.ptr), "c" (new_value.tag));
+    return ret;
+}
+
+#else
+inline
+bool CAS2(pointer_t *addr,
+         pointer_t &old_value,
+         pointer_t &new_value)
+{
+    bool  ret;
+    __asm__ __volatile__(
+        "lock cmpxchg8b %1;\n"
+        "sete %0;\n"
+        :"=m"(ret),"+m" (*(volatile pointer_t *) (addr))
+        :"a" (old_value.ptr), "d" (old_value.tag), "b" (new_value.ptr), "c" (new_value.tag));
+    return ret;
+}
+#endif
+
+class queue_t 
+{
+    pointer_t tail_;
+    pointer_t head_;
+public:
+    queue_t() {
+
+    }
+
+    void init() {
+        node_t *nd = new node_t();
+        nd->next = pointer_t(NULL, 0);
+        head_ = pointer_t(nd, 0);
+        tail_ = pointer_t(nd, 0);
+    }
+
+    void enqueue(data_type val) {
+        pointer_t tail, next;
+        node_t* nd = new node_t();
+        nd->value = val;
+        while(true){
+            tail = this->tail_; 
+            next = tail.ptr->next;
+            if (tail == this->tail_) {
+                if(next.ptr == NULL) {
+                    pointer_t new_pt(nd, next.tag+1);
+                    if(CAS2(&(this->tail_.ptr->next), next, new_pt)){ 
+                        break; // Enqueue done!
+                    }
+                }else {
+                    pointer_t new_pt(next.ptr, tail.tag+1);
+                    CAS2(&(this->tail_), tail, new_pt); 
+                }
+            }
+        }
+        pointer_t new_pt(nd, tail.tag+1);
+        CAS2(&(this->tail_), tail, new_pt);
+    }
+
+
+    data_type dequeue() {
+        pointer_t tail, head, next;
+        data_type val=NULL;
+        while(true){ 
+            head = this->head_; 
+            tail = this->tail_; 
+            next = (head.ptr)->next; 
+            if (head != this->head_) continue;
+
+            if(head.ptr == tail.ptr){
+                if (next.ptr == NULL){ 
+                    return NULL;
+                }
+                pointer_t new_pt(next.ptr, tail.tag+1);
+                CAS2(&(this->tail_), tail, new_pt);
+            } else{ 
+                val = next.ptr->value;
+                pointer_t new_pt(next.ptr, head.tag+1);
+                if(CAS2(&(this->head_), head, new_pt)){
+                    break;
+                }
+            }
+        }
+        delete head.ptr;
+        return val;
+    }
+};
 
 struct real_lock_free_queue {
     void push(unsigned long long push_time) {
@@ -64,7 +208,7 @@ struct real_lock_free_queue {
     int pop_count;
 };
 
-struct lock_free_queue   //�Ұ�ʵ�ֲ���ȥ���ˣ���ܹ��ο������д�ӡ���ְ������ԣ�ȷ���ӳ١���ʽ��ƴ����ע�͵���
+struct lock_free_queue   //ÎÒ°ÑÊµÏÖ²¿·ÖÈ¥µôÁË£¬¿òŒÜ¹©²Î¿Œ£¬ÆäÖÐŽòÓ¡²¿·Ö°ïÖúµ÷ÊÔ£¬È·¶šÑÓ³Ù¡£ÕýÊœ±ÈÆŽ¿ÉÒÔ×¢ÊÍµô¡£
 {
 	void push(unsigned long long pop_time)
 	{
